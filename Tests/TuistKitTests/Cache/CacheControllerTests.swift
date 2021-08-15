@@ -17,6 +17,7 @@ import XCTest
 
 final class CacheControllerTests: TuistUnitTestCase {
     var generator: MockGenerator!
+    var updatedGenerator: MockGenerator!
     var cacheGraphContentHasher: MockCacheGraphContentHasher!
     var artifactBuilder: MockCacheArtifactBuilder!
     var bundleArtifactBuilder: MockCacheArtifactBuilder!
@@ -29,6 +30,7 @@ final class CacheControllerTests: TuistUnitTestCase {
 
     override func setUp() {
         generator = MockGenerator()
+        updatedGenerator = MockGenerator()
         artifactBuilder = MockCacheArtifactBuilder()
         bundleArtifactBuilder = MockCacheArtifactBuilder()
         cache = MockCacheStorage()
@@ -37,6 +39,7 @@ final class CacheControllerTests: TuistUnitTestCase {
         config = .test()
         projectGeneratorProvider = MockCacheControllerProjectGeneratorProvider()
         projectGeneratorProvider.stubbedGeneratorResult = generator
+        projectGeneratorProvider.stubbedGeneratorTargetsToFilterResult = updatedGenerator
         cacheGraphLinter = MockCacheGraphLinter()
         subject = CacheController(
             cache: cache,
@@ -53,6 +56,7 @@ final class CacheControllerTests: TuistUnitTestCase {
     override func tearDown() {
         super.tearDown()
         generator = nil
+        updatedGenerator = nil
         artifactBuilder = nil
         bundleArtifactBuilder = nil
         cacheGraphContentHasher = nil
@@ -71,6 +75,8 @@ final class CacheControllerTests: TuistUnitTestCase {
         let aTarget = Target.test(name: targetNames[0])
         let bTarget = Target.test(name: targetNames[1])
         let cTarget = Target.test(name: targetNames[2])
+        let targetReferences = [aTarget, bTarget, cTarget].map { TargetReference(projectPath: xcworkspacePath, name: $0.name) }
+        let scheme = Scheme(name: "Project-ProjectCache-Frameworks-iOS", buildAction: .test(targets: targetReferences))
         let aFrameworkPath = path.appending(component: "\(aTarget.name).framework")
         let bFrameworkPath = path.appending(component: "\(bTarget.name).framework")
         let cFrameworkPath = path.appending(component: "\(cTarget.name).framework")
@@ -87,6 +93,7 @@ final class CacheControllerTests: TuistUnitTestCase {
             cGraphTarget: "\(cTarget.name)_HASH",
         ]
         let graph = Graph.test(
+            workspace: .test(schemes: [scheme]),
             projects: [project.path: project],
             targets: nodeWithHashes.keys.reduce(into: [project.path: [String: Target]()]) { $0[project.path]?[$1.target.name] = $1.target },
             dependencies: [
@@ -107,9 +114,9 @@ final class CacheControllerTests: TuistUnitTestCase {
             XCTAssertEqual(loadPath, path)
             return (xcworkspacePath, graph)
         }
-        generator.generateStub = { (loadPath, _) -> AbsolutePath in
+        updatedGenerator.generateWithGraphStub = { (loadPath, _) -> (AbsolutePath, Graph) in
             XCTAssertEqual(loadPath, path)
-            return xcworkspacePath
+            return (xcworkspacePath, graph)
         }
         cacheGraphContentHasher.contentHashesStub = { _, _, _ in
             nodeWithHashes
@@ -122,16 +129,16 @@ final class CacheControllerTests: TuistUnitTestCase {
         // Then
         XCTAssertPrinterOutputContains("""
         Hashing cacheable targets
+        Filtering cacheable targets
         Building cacheable targets
-        Building cacheable targets: \(aTarget.name), 1 out of 3
-        Building cacheable targets: \(bTarget.name), 2 out of 3
-        Building cacheable targets: \(cTarget.name), 3 out of 3
+        Storing cacheable targets: \(aTarget.name), 1 out of 3
+        Storing cacheable targets: \(bTarget.name), 2 out of 3
+        Storing cacheable targets: \(cTarget.name), 3 out of 3
         All cacheable targets have been cached successfully as xcframeworks
         """)
         XCTAssertEqual(cacheGraphLinter.invokedLintCount, 1)
-        XCTAssertEqual(artifactBuilder.invokedBuildProjectTargetParametersList[0].target, aTarget)
-        XCTAssertEqual(artifactBuilder.invokedBuildProjectTargetParametersList[1].target, bTarget)
-        XCTAssertEqual(artifactBuilder.invokedBuildProjectTargetParametersList[2].target, cTarget)
+        XCTAssertEqual(artifactBuilder.invokedBuildSchemeProjectCount, 1)
+        XCTAssertEqual(artifactBuilder.invokedBuildSchemeProjectParameters?.scheme, scheme)
     }
 
     func test_filtered_cache_builds_and_caches_the_frameworks() throws {
@@ -143,6 +150,8 @@ final class CacheControllerTests: TuistUnitTestCase {
         let aTarget = Target.test(name: targetNames[0])
         let bTarget = Target.test(name: targetNames[1])
         let cTarget = Target.test(name: targetNames[2])
+        let targetReferences = [aTarget, bTarget, cTarget].map { TargetReference(projectPath: xcworkspacePath, name: $0.name) }
+        let scheme = Scheme(name: "Project-ProjectCache-Frameworks-iOS", buildAction: .test(targets: targetReferences))
         let aFrameworkPath = path.appending(component: "\(aTarget.name).framework")
         let bFrameworkPath = path.appending(component: "\(bTarget.name).framework")
         let cFrameworkPath = path.appending(component: "\(cTarget.name).framework")
@@ -159,6 +168,7 @@ final class CacheControllerTests: TuistUnitTestCase {
             cGraphTarget: "\(cTarget.name)_HASH",
         ]
         let graph = Graph.test(
+            workspace: .test(schemes: [scheme]),
             projects: [project.path: project],
             targets: nodeWithHashes.keys.reduce(into: [project.path: [String: Target]()]) { $0[project.path]?[$1.target.name] = $1.target },
             dependencies: [
@@ -179,9 +189,9 @@ final class CacheControllerTests: TuistUnitTestCase {
             XCTAssertEqual(loadPath, path)
             return (xcworkspacePath, graph)
         }
-        generator.generateStub = { (loadPath, _) -> AbsolutePath in
+        updatedGenerator.generateWithGraphStub = { (loadPath, _) -> (AbsolutePath, Graph) in
             XCTAssertEqual(loadPath, path)
-            return xcworkspacePath
+            return (xcworkspacePath, graph)
         }
         cacheGraphContentHasher.contentHashesStub = { _, _, _ in
             nodeWithHashes
@@ -194,13 +204,14 @@ final class CacheControllerTests: TuistUnitTestCase {
         // Then
         XCTAssertPrinterOutputContains("""
         Hashing cacheable targets
+        Filtering cacheable targets
         Building cacheable targets
-        Building cacheable targets: \(aTarget.name), 1 out of 2
-        Building cacheable targets: \(bTarget.name), 2 out of 2
+        Storing cacheable targets: \(aTarget.name), 1 out of 2
+        Storing cacheable targets: \(bTarget.name), 2 out of 2
         All cacheable targets have been cached successfully as xcframeworks
         """)
         XCTAssertEqual(cacheGraphLinter.invokedLintCount, 1)
-        XCTAssertEqual(artifactBuilder.invokedBuildProjectTargetParametersList[0].target, aTarget)
-        XCTAssertEqual(artifactBuilder.invokedBuildProjectTargetParametersList[1].target, bTarget)
+        XCTAssertEqual(artifactBuilder.invokedBuildSchemeProjectCount, 1)
+        XCTAssertEqual(artifactBuilder.invokedBuildSchemeProjectParameters?.scheme, scheme)
     }
 }
